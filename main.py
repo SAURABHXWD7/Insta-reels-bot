@@ -5,6 +5,8 @@ import yt_dlp
 import threading
 
 # ←←← APNA BOT TOKEN YAHAN DAALO ←←←
+TOKEN = "7738640276:AAH4lWc0_Qq0_Su2hvhhpXFT7LfpyXzF1V8"
+
 bot = telebot.TeleBot(TOKEN)
 
 # Folders
