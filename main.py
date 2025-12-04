@@ -3,17 +3,30 @@ import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import yt_dlp
 import threading
+import time
 
-# ←←← APNA BOT TOKEN YAHAN DAALO ←←←
+# ←←← YOUR BOT TOKEN ←←←
 TOKEN = "7738640276:AAH4lWc0_Qq0_Su2hvhhpXFT7LfpyXzF1V8"
-
 bot = telebot.TeleBot(TOKEN)
 
-# Folders
+# Temporary storage: message_id → url (auto cleanup after 10 minutes)
+URL_STORAGE = {}
+STORAGE_TIMEOUT = 600  # 10 minutes
+
 if not os.path.exists('downloads'):
     os.makedirs('downloads')
 
-# Common yt-dlp options
+def cleanup_storage():
+    while True:
+        time.sleep(60)
+        now = time.time()
+        to_remove = [k for k, v in URL_STORAGE.items() if now - v[1] > STORAGE_TIMEOUT]
+        for k in to_remove:
+            URL_STORAGE.pop(k, None)
+
+# Start cleanup thread
+threading.Thread(target=cleanup_storage, daemon=True).start()
+
 def get_ydl_opts(format_type, msg_id):
     if format_type == "audio_best":
         return {
@@ -23,8 +36,9 @@ def get_ydl_opts(format_type, msg_id):
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }],
-            'outtmpl': f'downloads/{msg_id}_audio',
+            'outtmpl': f'downloads/{msg_id}_audio.%(ext)s',
             'quiet': True,
+            'no_warnings': True,
         }
     elif format_type == "audio_fast":
         return {
@@ -33,7 +47,7 @@ def get_ydl_opts(format_type, msg_id):
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
             }],
-            'outtmpl': f'downloads/{msg_id}_audio_fast',
+            'outtmpl': f'downloads/{msg_id}_audio_fast.%(ext)s',
             'quiet': True,
         }
     else:  # video
@@ -55,81 +69,97 @@ def download_and_send(url, message, format_type):
         title = info.get('title', 'Instagram Reel')
         duration = info.get('duration', 0)
 
-        if format_type in ["audio_best", "audio_fast"]:
-            filename = f"downloads/{msg_id}_audio.mp3" if format_type == "audio_best" else f"downloads/{msg_id}_audio_fast.mp3"
-            with open(filename, 'rb') as audio:
-                bot.send_audio(
-                    chat_id,
-                    audio,
-                    title=title,
-                    caption=f"🎧 {title}\n\nBot by @YourChannel",
-                    reply_to_message_id=message.message_id
-                )
-            os.remove(filename)
-
-        else:  # video
+        # Send Audio
+        if format_type.startswith("audio"):
+            pattern = f"{msg_id}_audio"
             filename = None
-            for file in os.listdir('downloads'):
-                if file.startswith(f"{msg_id}_video"):
-                    filename = f"downloads/{file}"
+            for f in os.listdir('downloads'):
+                if pattern in f and f.endswith('.mp3'):
+                    filename = f"downloads/{f}"
                     break
-            if filename and os.path.getsize(filename) < 50 * 1024 * 1024:  # <50MB
+
+            if filename and os.path.exists(filename):
+                with open(filename, 'rb') as audio:
+                    bot.send_audio(
+                        chat_id, audio,
+                        title=title,
+                        caption=f"{title}\n\nBot by @YourChannel",
+                        reply_to_message_id=message.message_id
+                    )
+                os.remove(filename)
+
+        # Send Video
+        else:
+            filename = None
+            for f in os.listdir('downloads'):
+                if f.startswith(f"{msg_id}_video"):
+                    filename = f"downloads/{f}"
+                    break
+
+            if filename and os.path.getsize(filename) < 50 * 1024 * 1024:
                 with open(filename, 'rb') as video:
                     bot.send_video(
-                        chat_id,
-                        video,
-                        caption=f"🎬 {title}\n\nBot by @YourChannel",
+                        chat_id, video,
+                        caption=f"{title}\n\nBot by @YourChannel",
                         supports_streaming=True,
                         reply_to_message_id=message.message_id
                     )
+                os.remove(filename)
             else:
-                bot.send_message(chat_id, "Video 50MB se bada hai, sirf audio bhej raha hoon...")
-                # fallback to audio
+                bot.send_message(chat_id, "Video 50MB se bada hai, audio bhej raha hoon...")
+                # Fallback audio
                 opts = get_ydl_opts("audio_best", msg_id)
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     ydl.extract_info(url, download=True)
-                with open(f"downloads/{msg_id}_audio.mp3", 'rb') as audio:
-                    bot.send_audio(chat_id, audio, title=title)
-                os.remove(f"downloads/{msg_id}_audio.mp3")
-            if filename:
-                os.remove(filename)
+                for f in os.listdir('downloads'):
+                    if f.startswith(f"{msg_id}_audio") and f.endswith('.mp3'):
+                        with open(f"downloads/{f}", 'rb') as audio:
+                            bot.send_audio(chat_id, audio, title=title)
+                        os.remove(f"downloads/{f}")
+                        break
 
-        # Clean up any leftover files
+        # Final cleanup
         for f in os.listdir('downloads'):
-            if str(msg_id) in f:
-                try: os.remove(f"downloads/{f}")
-                except: pass
+            if str(msg_id) in f):
+                try:
+                    os.remove(f"downloads/{f}")
+                except:
+                    pass
 
     except Exception as e:
-        bot.send_message(chat_id, f"Galti ho gayi 😭\n{e}\n\nPublic Reel ka link bhejo!")
+        bot.send_message(chat_id, f"Error ho gaya 😭\n{e}\n\nPublic reel ka link bhejo!")
 
 @bot.message_handler(commands=['start'])
 def start(message):
     bot.reply_to(message, """
-🚀 *Instagram Reel Downloader Bot*
+*Instagram Reel Downloader Bot*
 
-Mujhe koi bhi Instagram Reel ka link bhejo → Main button dikhaunga:
+Mujhe public Instagram Reel/Post ka link bhejo
 
-• Audio (Fast)  
-• Audio (Best Quality)  
-• Full Video (720p)
+Main tumhe 3 options dunga:
+• Audio (Fast)
+• Audio (Best Quality) 
+• Video (720p)
 
-Bas link bhejo aur choose karo! 🔥
+Bas link daalo aur choose karo!
     """, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda m: True)
 def handle_links(message):
-    text = message.text
-    if "instagram.com" in text or "instagr.am" in text:
+    text = message.text.strip()
+    if ("instagram.com" in text or "instagr.am" in text) and ("/reel/" in text or "/p/" in text or "/tv/" in text):
+        # Store URL with timestamp
+        URL_STORAGE[message.message_id] = (text, time.time())
+
         markup = InlineKeyboardMarkup(row_width=1)
         markup.add(
-            InlineKeyboardButton("🎧 Audio (Fast)", callback_data=f"audio_fast|{message.message_id}|{text}"),
-            InlineKeyboardButton("🎵 Audio (Best Quality)", callback_data=f"audio_best|{message.message_id}|{text}"),
-            InlineKeyboardButton("🎬 Full Video (720p)", callback_data=f"video|{message.message_id}|{text}"),
+            InlineKeyboardButton("Audio (Fast)", callback_data=f"audio_fast|{message.message_id}"),
+            InlineKeyboardButton("Audio (Best Quality)", callback_data=f"audio_best|{message.message_id}"),
+            InlineKeyboardButton("Full Video (720p)", callback_data=f"video|{message.message_id}"),
         )
-        bot.reply_to(message, "Choose karo kya chahiye 👇", reply_markup=markup)
+        bot.reply_to(message, "Kya download karna hai? 👇", reply_markup=markup)
     else:
-        bot.reply_to(message, "Bhai Instagram ka link bhejo na 😅")
+        bot.reply_to(message, "Bhai sirf public Instagram reel/post ka link bhejo")
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
@@ -137,20 +167,30 @@ def callback_handler(call):
         data = call.data.split("|")
         format_type = data[0]
         orig_msg_id = int(data[1])
-        url = data[2]
 
-        bot.answer_callback_query(call.id, "Download shuru kar diya ⏳")
+        if orig_msg_id not in URL_STORAGE:
+            bot.answer_callback_query(call.id, "Link expire ho gaya, naya bhejo", show_alert=True)
+            return
+
+        url, _ = URL_STORAGE.pop(orig_msg_id)  # remove after use karne ke baad
+
+        bot.answer_callback_query(call.id, "Download start ho gaya...")
         bot.edit_message_text(
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
-            text="⏳ Download ho raha hai... 5-15 sec lagega"
+            text="Download + upload ho raha hai... 10-30 sec lag sakta hai"
         )
 
-        # Background mein download karega
-        threading.Thread(target=download_and_send, args=(url, call.message, format_type)).start()
+        # Run in background
+        threading.Thread(
+            target=download_and_send,
+            args=(url, call.message.reply_to_message or call.message, format_type),
+            daemon=True
+        ).start()
 
     except Exception as e:
-        bot.send_message(call.message.chat.id, f"Error: {e}")
+        bot.answer_callback_query(call.id, "Error ho gaya!", show_alert=True)
+        print("Callback error:", e)
 
-print("Bot chal gaya! 🚀")
+print("Bot is running...")
 bot.infinity_polling()
